@@ -1,3 +1,16 @@
+/**
+ * @file lis331.c
+ * @brief Implementation of the LIS331DLH accelerometer driver.
+ *
+ * Register addresses, bit fields and sensitivity values follow the LIS331DLH
+ * datasheet (see docs/). I2C access uses the native ESP-IDF I2C master driver
+ * (`driver/i2c_master.h`). The transport layer is isolated behind small static
+ * helpers so the register logic does not depend on a specific I2C
+ * implementation.
+ *
+ * @ingroup lis331
+ */
+
 #include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
@@ -5,28 +18,58 @@
 #include "esp_log.h"
 #include "lis331.h"
 
+/** @brief WHO_AM_I device identification register. */
 #define LIS331_REG_WHO_AM_I  0x0F
+/** @brief CTRL_REG1: PM[2:0], DR[2:0], ZEN, YEN, XEN. */
 #define LIS331_REG_CTRL1     0x20
+/** @brief CTRL_REG4: BDU, BLE, FS[1:0]. */
 #define LIS331_REG_CTRL4     0x23
+/** @brief STATUS_REG: ZYXDA, ZYXOR and per-axis data/overrun flags. */
 #define LIS331_REG_STATUS    0x27
+/** @brief First output register (OUT_X_L); the X/Y/Z block is 6 bytes. */
 #define LIS331_REG_OUT_X_L   0x28
 
+/** @brief CTRL_REG1 mask for the PM[2:0] and DR[2:0] fields. */
 #define LIS331_CTRL1_PM_DR_MASK  0xF8
+/** @brief CTRL_REG1 axes-enable bits: ZEN | YEN | XEN (all axes on). */
 #define LIS331_CTRL1_AXES         0x07
+/** @brief CTRL_REG4.BDU: block data update. */
 #define LIS331_CTRL4_BDU          0x80
+/** @brief CTRL_REG4.BLE: big/little endian; kept 0 (little endian). */
 #define LIS331_CTRL4_BLE          0x40
+/** @brief CTRL_REG4 mask for the FS[1:0] full-scale field. */
 #define LIS331_CTRL4_FS_MASK      0x30
+/** @brief STATUS_REG.ZYXDA: new data available for all axes. */
 #define LIS331_STATUS_ZYXDA       0x08
+/** @brief Sub-address MSB enabling register auto-increment during bursts. */
 #define LIS331_I2C_AUTO_INCREMENT 0x80
+/** @brief Timeout for a single I2C transaction, in milliseconds. */
 #define LIS331_I2C_TIMEOUT_MS     1000
+/** @brief Standard gravity used for the m/s^2 conversion. */
 #define LIS331_GRAVITY_M_S2       9.80665f
 
+/**
+ * @brief Driver instance.
+ *
+ * Wraps the transport-layer I2C device handle. Allocated in lis331_create()
+ * and released in lis331_delete(). The application owns the I2C bus itself.
+ */
 struct lis331_dev_t {
     i2c_master_dev_handle_t i2c_dev;
 };
 
+/** @brief Logging tag for this component. */
 static const char *TAG = "lis331";
 
+/**
+ * @brief Read a single register.
+ *
+ * @param[in]  handle Driver handle.
+ * @param[in]  reg    Register address.
+ * @param[out] value  Receives the register content.
+ *
+ * @return ESP_OK or any I2C transport error.
+ */
 static esp_err_t lis331_read_reg(lis331_handle_t handle, uint8_t reg, uint8_t *value)
 {
     if (handle == NULL || value == NULL) {
@@ -37,6 +80,17 @@ static esp_err_t lis331_read_reg(lis331_handle_t handle, uint8_t reg, uint8_t *v
                                        LIS331_I2C_TIMEOUT_MS);
 }
 
+/**
+ * @brief Read a block of consecutive registers.
+ *
+ * @param[in]  handle Driver handle.
+ * @param[in]  reg    First register address (auto-increment applied by the
+ *                    sub-address MSB when required).
+ * @param[out] values Buffer receiving `length` bytes.
+ * @param[in]  length Number of bytes to read.
+ *
+ * @return ESP_OK or any I2C transport error.
+ */
 static esp_err_t lis331_read_regs(lis331_handle_t handle, uint8_t reg, uint8_t *values,
                                   size_t length)
 {
@@ -48,6 +102,15 @@ static esp_err_t lis331_read_regs(lis331_handle_t handle, uint8_t reg, uint8_t *
                                        LIS331_I2C_TIMEOUT_MS);
 }
 
+/**
+ * @brief Write a single register.
+ *
+ * @param[in] handle Driver handle.
+ * @param[in] reg    Register address.
+ * @param[in] value  Value to write.
+ *
+ * @return ESP_OK or any I2C transport error.
+ */
 static esp_err_t lis331_write_reg(lis331_handle_t handle, uint8_t reg, uint8_t value)
 {
     if (handle == NULL) {
@@ -59,6 +122,19 @@ static esp_err_t lis331_write_reg(lis331_handle_t handle, uint8_t reg, uint8_t v
                                LIS331_I2C_TIMEOUT_MS);
 }
 
+/**
+ * @brief Read-modify-write of a bit field in a register.
+ *
+ * Only the bits selected by `mask` are changed; the rest of the register is
+ * preserved.
+ *
+ * @param[in] handle Driver handle.
+ * @param[in] reg    Register address.
+ * @param[in] mask   Bit mask of the field to modify.
+ * @param[in] value  New field value (only bits in `mask` are applied).
+ *
+ * @return ESP_OK or any I2C transport error.
+ */
 static esp_err_t lis331_update_reg_bits(lis331_handle_t handle, uint8_t reg,
                                         uint8_t mask, uint8_t value)
 {
@@ -72,6 +148,14 @@ static esp_err_t lis331_update_reg_bits(lis331_handle_t handle, uint8_t reg,
     return lis331_write_reg(handle, reg, current);
 }
 
+/**
+ * @brief Map an ODR/power-mode enum to the CTRL_REG1 PM|DR bit field.
+ *
+ * @param[in]  odr          Enum value.
+ * @param[out] ctrl1_bits   PM[2:0] | DR[2:0] field, zeroed otherwise.
+ *
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG for an unknown enum or NULL output.
+ */
 static esp_err_t lis331_odr_to_ctrl1(lis331_odr_t odr, uint8_t *ctrl1_bits)
 {
     if (ctrl1_bits == NULL) {
@@ -95,6 +179,15 @@ static esp_err_t lis331_odr_to_ctrl1(lis331_odr_t odr, uint8_t *ctrl1_bits)
     return ESP_OK;
 }
 
+/**
+ * @brief Reverse map of the CTRL_REG1 PM|DR field to an ODR/power-mode enum.
+ *
+ * @param[in]  ctrl1 CTRL_REG1 content.
+ * @param[out] odr   Receives the matching enum value.
+ *
+ * @return ESP_OK, ESP_ERR_INVALID_ARG for NULL output, or
+ *         ESP_ERR_INVALID_RESPONSE for an unknown PM|DR field.
+ */
 static esp_err_t lis331_ctrl1_to_odr(uint8_t ctrl1, lis331_odr_t *odr)
 {
     if (odr == NULL) {
@@ -118,6 +211,14 @@ static esp_err_t lis331_ctrl1_to_odr(uint8_t ctrl1, lis331_odr_t *odr)
     return ESP_OK;
 }
 
+/**
+ * @brief Map a full-scale range enum to the CTRL_REG4 FS[1:0] field.
+ *
+ * @param[in]  range       Enum value.
+ * @param[out] ctrl4_bits  FS[1:0] field, zeroed otherwise.
+ *
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG for an unknown enum or NULL output.
+ */
 static esp_err_t lis331_range_to_ctrl4(lis331_range_t range, uint8_t *ctrl4_bits)
 {
     if (ctrl4_bits == NULL) {
@@ -134,6 +235,15 @@ static esp_err_t lis331_range_to_ctrl4(lis331_range_t range, uint8_t *ctrl4_bits
     return ESP_OK;
 }
 
+/**
+ * @brief Reverse map of the CTRL_REG4 FS[1:0] field to a range enum.
+ *
+ * @param[in]  ctrl4 CTRL_REG4 content.
+ * @param[out] range Receives the matching range enum.
+ *
+ * @return ESP_OK, ESP_ERR_INVALID_ARG for NULL output, or
+ *         ESP_ERR_INVALID_RESPONSE for an unknown FS value.
+ */
 static esp_err_t lis331_ctrl4_to_range(uint8_t ctrl4, lis331_range_t *range)
 {
     if (range == NULL) {
@@ -150,6 +260,16 @@ static esp_err_t lis331_ctrl4_to_range(uint8_t ctrl4, lis331_range_t *range)
     return ESP_OK;
 }
 
+/**
+ * @brief Nominal settling time for a given ODR, in milliseconds.
+ *
+ * Used to wait until the first valid sample after a configuration change.
+ * Returns 0 for power-down, for which no data is expected.
+ *
+ * @param[in] odr Output data rate / power mode.
+ *
+ * @return Settling time in ms.
+ */
 static uint32_t lis331_settling_time_ms(lis331_odr_t odr)
 {
     switch (odr) {
@@ -166,6 +286,11 @@ static uint32_t lis331_settling_time_ms(lis331_odr_t odr)
     }
 }
 
+/**
+ * @brief Block the calling task until the ODR has settled.
+ *
+ * @param[in] odr Output data rate / power mode.
+ */
 static void lis331_wait_for_settling(lis331_odr_t odr)
 {
     uint32_t settling_time_ms = lis331_settling_time_ms(odr);
