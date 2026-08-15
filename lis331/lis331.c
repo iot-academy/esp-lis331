@@ -261,6 +261,31 @@ static esp_err_t lis331_ctrl4_to_range(uint8_t ctrl4, lis331_range_t *range)
 }
 
 /**
+ * @brief Acceleration scale in m/s^2 per normalized 12-bit count.
+ *
+ * The LIS331DLH reports acceleration as a left-justified 16-bit word
+ * (AN2847, section 2.4.1). Normalizing to 12 bits yields FS/2048 g per
+ * count, i.e. 1 LSB = 2*FS/4096 g (AN2847, section 2.4.3 and datasheet
+ * self-test note). For FS = 2/4/8 g this gives 0.977/1.953/3.906 mg per
+ * count.
+ *
+ * @param[in] range Full-scale range.
+ *
+ * @return Scale in m/s^2 per normalized 12-bit count.
+ */
+static float lis331_range_scale_m_s2(lis331_range_t range)
+{
+    float full_scale_g;
+    switch (range) {
+    case LIS331_RANGE_2G: full_scale_g = 2.0f; break;
+    case LIS331_RANGE_4G: full_scale_g = 4.0f; break;
+    case LIS331_RANGE_8G: full_scale_g = 8.0f; break;
+    default: return 0.0f;
+    }
+    return full_scale_g * LIS331_GRAVITY_M_S2 / 2048.0f;
+}
+
+/**
  * @brief Nominal settling time for a given ODR, in milliseconds.
  *
  * Used to wait until the first valid sample after a configuration change.
@@ -527,15 +552,10 @@ esp_err_t lis331_read_acceleration(lis331_handle_t handle,
         return ret;
     }
 
-    float sensitivity_mg;
-    switch (range) {
-    case LIS331_RANGE_2G: sensitivity_mg = 1.0f; break;
-    case LIS331_RANGE_4G: sensitivity_mg = 2.0f; break;
-    case LIS331_RANGE_8G: sensitivity_mg = 3.9f; break;
-    default: return ESP_ERR_INVALID_RESPONSE;
+    float scale = lis331_range_scale_m_s2(range);
+    if (scale == 0.0f) {
+        return ESP_ERR_INVALID_RESPONSE;
     }
-
-    float scale = sensitivity_mg * LIS331_GRAVITY_M_S2 / 1000.0f;
     acceleration->x = raw.x * scale;
     acceleration->y = raw.y * scale;
     acceleration->z = raw.z * scale;

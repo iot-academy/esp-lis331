@@ -80,12 +80,14 @@ typedef enum {
 /**
  * @brief Full-scale range selection (CTRL_REG4.FS[1:0]).
  *
- * The sensitivities are typical values from the LIS331DLH datasheet.
+ * The acceleration scale is derived from the full scale as 2*FS/4096 g per
+ * 12-bit count (AN2847, section 2.4.3; datasheet self-test note). For the
+ * three ranges this corresponds to 0.977 / 1.953 / 3.906 mg per count.
  */
 typedef enum {
-    LIS331_RANGE_2G, /**< +/-2 g full scale; sensitivity 1.0 mg/digit. */
-    LIS331_RANGE_4G, /**< +/-4 g full scale; sensitivity 2.0 mg/digit. */
-    LIS331_RANGE_8G, /**< +/-8 g full scale; sensitivity 3.9 mg/digit. */
+    LIS331_RANGE_2G, /**< +/-2 g full scale; 0.977 mg/digit (12-bit). */
+    LIS331_RANGE_4G, /**< +/-4 g full scale; 1.953 mg/digit (12-bit). */
+    LIS331_RANGE_8G, /**< +/-8 g full scale; 3.906 mg/digit (12-bit). */
 } lis331_range_t;
 
 /**
@@ -106,8 +108,8 @@ typedef struct {
  * @brief Acceleration output in SI units.
  *
  * Values are in m/s^2. One raw count corresponds to
- * sensitivity_mg * 9.80665 / 1000 m/s^2, where sensitivity_mg depends on the
- * configured full-scale range (1.0, 2.0 or 3.9 mg).
+ * 2*FS/2048 * 9.80665 m/s^2, where FS is the configured full-scale range
+ * in g (2, 4 or 8). At 1 g the output is exactly 9.80665 m/s^2.
  */
 typedef struct {
     float x; /**< X axis acceleration, m/s^2. */
@@ -298,7 +300,7 @@ esp_err_t lis331_read_raw(lis331_handle_t handle, lis331_raw_xyz_t *raw);
  * @brief Read acceleration in m/s^2.
  *
  * Reads raw counts and converts them to SI units using the current range:
- * a = raw_count * sensitivity_mg * 9.80665 / 1000.
+ * a = raw_count * 2*FS/2048 * 9.80665, where FS is the full-scale range in g.
  *
  * @param[in]  handle       Driver handle.
  * @param[out] acceleration Receives X/Y/Z acceleration in m/s^2.
