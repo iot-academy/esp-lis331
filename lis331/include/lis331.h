@@ -6,11 +6,15 @@
  * the ESP-IDF I2C interface. All register semantics follow the LIS331DLH
  * datasheet (see docs/); no functionality from similar ST sensors is assumed.
  *
- * Transport selection (selected by the component dependency in
- * idf_component.yml):
- *   - native ESP-IDF I2C master driver (`driver/i2c_master.h`) - this branch
- *     (`main`);
- *   - ESP-IoT-Solution `i2c_bus` wrapper - branch `compat/i2c-bus`.
+ * Transport selection (selected at build time):
+ *   - native ESP-IDF I2C master driver (`driver/i2c_master.h`) - always
+ *     available, used by lis331_create();
+ *   - ESP-IoT-Solution `i2c_bus` wrapper - enabled by the Kconfig option
+ *     CONFIG_LIS331_USE_I2C_BUS, used by lis331_create_i2c_bus(). Requires
+ *     the `i2c_bus` component in the build.
+ *
+ * The register-level API is identical for both transports; only device
+ * creation differs.
  *
  * Addresses are 7-bit (no R/W bit). The address is selected by the SA0 pin:
  * LIS331_I2C_ADDR_SA0_GND or LIS331_I2C_ADDR_SA0_VDD.
@@ -39,6 +43,10 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+
+#ifdef CONFIG_LIS331_USE_I2C_BUS
+#include "i2c_bus.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -158,6 +166,38 @@ esp_err_t lis331_create(i2c_master_bus_handle_t bus,
                         uint8_t device_address,
                         const lis331_config_t *config,
                         lis331_handle_t *out_handle);
+
+#ifdef CONFIG_LIS331_USE_I2C_BUS
+/**
+ * @brief Create and initialize a LIS331DLH device on an ESP-IoT-Solution
+ *        i2c_bus.
+ *
+ * Same behavior as lis331_create(), but attaches the device to an
+ * ESP-IoT-Solution i2c_bus handle instead of a native ESP-IDF I2C master bus.
+ * The register-level API is identical to lis331_create().
+ *
+ * @param[in]  bus             i2c_bus handle, owned by the application. The
+ *                             driver only attaches a device to it and never
+ *                             deletes the bus.
+ * @param[in]  device_address  7-bit I2C address, normally
+ *                             LIS331_I2C_ADDR_SA0_GND or LIS331_I2C_ADDR_SA0_VDD.
+ * @param[in]  config          Optional configuration; NULL selects defaults
+ *                             (100 kHz I2C, normal mode 50 Hz, +/-2 g, BDU on).
+ * @param[out] out_handle      Receives the driver handle on success.
+ *
+ * @return ESP_OK on success.
+ * @return ESP_ERR_INVALID_ARG on NULL arguments, device_address > 0x7F,
+ *         invalid ODR/range, or i2c_clock_hz outside 1..400 kHz.
+ * @return ESP_ERR_NO_MEM if the driver handle cannot be allocated.
+ * @return ESP_ERR_INVALID_RESPONSE if WHO_AM_I does not match 0x32.
+ * @return ESP_FAIL if the device cannot be attached to the bus.
+ * @return any I2C transport error during register access.
+ */
+esp_err_t lis331_create_i2c_bus(i2c_bus_handle_t bus,
+                                uint8_t device_address,
+                                const lis331_config_t *config,
+                                lis331_handle_t *out_handle);
+#endif /* CONFIG_LIS331_USE_I2C_BUS */
 
 /**
  * @brief Delete a device created by lis331_create().

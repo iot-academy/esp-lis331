@@ -3,10 +3,11 @@
  * @brief Implementation of the LIS331DLH accelerometer driver.
  *
  * Register addresses, bit fields and sensitivity values follow the LIS331DLH
- * datasheet (see docs/). I2C access uses the native ESP-IDF I2C master driver
- * (`driver/i2c_master.h`). The transport layer is isolated behind small static
- * helpers so the register logic does not depend on a specific I2C
- * implementation.
+ * datasheet (see docs/). The transport layer is isolated behind a small ops
+ * table so the register logic does not depend on a specific I2C
+ * implementation. Two transports are supported:
+ *   - native ESP-IDF I2C master driver (`driver/i2c_master.h`);
+ *   - ESP-IoT-Solution `i2c_bus` wrapper (enabled by CONFIG_LIS331_USE_I2C_BUS).
  *
  * @ingroup lis331
  */
@@ -17,6 +18,10 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "lis331.h"
+
+#ifdef CONFIG_LIS331_USE_I2C_BUS
+#include "i2c_bus.h"
+#endif
 
 /** @brief WHO_AM_I device identification register. */
 #define LIS331_REG_WHO_AM_I  0x0F
@@ -49,17 +54,111 @@
 #define LIS331_GRAVITY_M_S2       9.80665f
 
 /**
+ * @brief Transport operations implemented by each I2C backend.
+ */
+typedef struct {
+    /** @brief Read a single register. */
+    esp_err_t (*read_reg)(void *dev, uint8_t reg, uint8_t *value);
+    /** @brief Read a block of consecutive registers. */
+    esp_err_t (*read_regs)(void *dev, uint8_t reg, uint8_t *values, size_t length);
+    /** @brief Write a single register. */
+    esp_err_t (*write_reg)(void *dev, uint8_t reg, uint8_t value);
+    /** @brief Remove the device from the bus and release its handle. */
+    esp_err_t (*delete)(void **dev);
+} lis331_transport_ops_t;
+
+/**
  * @brief Driver instance.
  *
- * Wraps the transport-layer I2C device handle. Allocated in lis331_create()
- * and released in lis331_delete(). The application owns the I2C bus itself.
+ * Holds the transport-specific I2C device handle and the ops table of the
+ * selected backend. Allocated in lis331_create()/lis331_create_i2c_bus() and
+ * released in lis331_delete(). The application owns the I2C bus itself.
  */
 struct lis331_dev_t {
-    i2c_master_dev_handle_t i2c_dev;
+    void *dev;
+    const lis331_transport_ops_t *ops;
 };
 
 /** @brief Logging tag for this component. */
 static const char *TAG = "lis331";
+
+/*
+ * Native ESP-IDF I2C master driver backend.
+ */
+
+static esp_err_t lis331_native_read_reg(void *dev, uint8_t reg, uint8_t *value)
+{
+    return i2c_master_transmit_receive((i2c_master_dev_handle_t)dev, &reg, 1,
+                                       value, 1, LIS331_I2C_TIMEOUT_MS);
+}
+
+static esp_err_t lis331_native_read_regs(void *dev, uint8_t reg, uint8_t *values,
+                                         size_t length)
+{
+    return i2c_master_transmit_receive((i2c_master_dev_handle_t)dev, &reg, 1,
+                                       values, length, LIS331_I2C_TIMEOUT_MS);
+}
+
+static esp_err_t lis331_native_write_reg(void *dev, uint8_t reg, uint8_t value)
+{
+    uint8_t transaction[] = {reg, value};
+    return i2c_master_transmit((i2c_master_dev_handle_t)dev, transaction,
+                               sizeof(transaction), LIS331_I2C_TIMEOUT_MS);
+}
+
+static esp_err_t lis331_native_delete(void **dev)
+{
+    esp_err_t ret = i2c_master_bus_rm_device((i2c_master_dev_handle_t)*dev);
+    if (ret == ESP_OK) {
+        *dev = NULL;
+    }
+    return ret;
+}
+
+static const lis331_transport_ops_t lis331_native_ops = {
+    .read_reg = lis331_native_read_reg,
+    .read_regs = lis331_native_read_regs,
+    .write_reg = lis331_native_write_reg,
+    .delete = lis331_native_delete,
+};
+
+#ifdef CONFIG_LIS331_USE_I2C_BUS
+/*
+ * ESP-IoT-Solution i2c_bus backend.
+ */
+
+static esp_err_t lis331_i2c_bus_read_reg(void *dev, uint8_t reg, uint8_t *value)
+{
+    return i2c_bus_read_byte((i2c_bus_device_handle_t)dev, reg, value);
+}
+
+static esp_err_t lis331_i2c_bus_read_regs(void *dev, uint8_t reg, uint8_t *values,
+                                          size_t length)
+{
+    return i2c_bus_read_bytes((i2c_bus_device_handle_t)dev, reg, length, values);
+}
+
+static esp_err_t lis331_i2c_bus_write_reg(void *dev, uint8_t reg, uint8_t value)
+{
+    return i2c_bus_write_byte((i2c_bus_device_handle_t)dev, reg, value);
+}
+
+static esp_err_t lis331_i2c_bus_delete(void **dev)
+{
+    esp_err_t ret = i2c_bus_device_delete((i2c_bus_device_handle_t *)dev);
+    if (ret == ESP_OK) {
+        *dev = NULL;
+    }
+    return ret;
+}
+
+static const lis331_transport_ops_t lis331_i2c_bus_ops = {
+    .read_reg = lis331_i2c_bus_read_reg,
+    .read_regs = lis331_i2c_bus_read_regs,
+    .write_reg = lis331_i2c_bus_write_reg,
+    .delete = lis331_i2c_bus_delete,
+};
+#endif /* CONFIG_LIS331_USE_I2C_BUS */
 
 /**
  * @brief Read a single register.
@@ -76,8 +175,7 @@ static esp_err_t lis331_read_reg(lis331_handle_t handle, uint8_t reg, uint8_t *v
         return ESP_ERR_INVALID_ARG;
     }
 
-    return i2c_master_transmit_receive(handle->i2c_dev, &reg, 1, value, 1,
-                                       LIS331_I2C_TIMEOUT_MS);
+    return handle->ops->read_reg(handle->dev, reg, value);
 }
 
 /**
@@ -98,8 +196,7 @@ static esp_err_t lis331_read_regs(lis331_handle_t handle, uint8_t reg, uint8_t *
         return ESP_ERR_INVALID_ARG;
     }
 
-    return i2c_master_transmit_receive(handle->i2c_dev, &reg, 1, values, length,
-                                       LIS331_I2C_TIMEOUT_MS);
+    return handle->ops->read_regs(handle->dev, reg, values, length);
 }
 
 /**
@@ -117,9 +214,7 @@ static esp_err_t lis331_write_reg(lis331_handle_t handle, uint8_t reg, uint8_t v
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint8_t transaction[] = {reg, value};
-    return i2c_master_transmit(handle->i2c_dev, transaction, sizeof(transaction),
-                               LIS331_I2C_TIMEOUT_MS);
+    return handle->ops->write_reg(handle->dev, reg, value);
 }
 
 /**
@@ -325,6 +420,53 @@ static void lis331_wait_for_settling(lis331_odr_t odr)
     }
 }
 
+/**
+ * @brief Common register initialization shared by both transport backends.
+ *
+ * Verifies WHO_AM_I, configures CTRL_REG1 (power mode / ODR / axes) and
+ * CTRL_REG4 (range / BDU / BLE) and waits for the ODR to settle. Called after
+ * the transport device handle has been created.
+ *
+ * @param[in] handle      Driver handle with a valid transport device.
+ * @param[in] config      Effective creation configuration.
+ * @param[in] odr_bits    CTRL_REG1 PM|DR field value.
+ * @param[in] range_bits  CTRL_REG4 FS[1:0] field value.
+ *
+ * @return ESP_OK on success.
+ * @return ESP_ERR_INVALID_RESPONSE if WHO_AM_I does not match 0x32.
+ * @return any I2C transport error during register access.
+ */
+static esp_err_t lis331_init_device(lis331_handle_t handle,
+                                    const lis331_config_t *config,
+                                    uint8_t odr_bits, uint8_t range_bits)
+{
+    uint8_t who_am_i;
+    esp_err_t ret = lis331_get_device_id(handle, &who_am_i);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (who_am_i != LIS331_WHO_AM_I_VALUE) {
+        ESP_LOGE(TAG, "unexpected WHO_AM_I: expected 0x%02X, got 0x%02X",
+                 LIS331_WHO_AM_I_VALUE, who_am_i);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    ret = lis331_write_reg(handle, LIS331_REG_CTRL1, odr_bits | LIS331_CTRL1_AXES);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    /* Keep output parsing deterministic: BLE=0 maps L then H at ascending addresses. */
+    ret = lis331_update_reg_bits(handle, LIS331_REG_CTRL4,
+                                 LIS331_CTRL4_FS_MASK | LIS331_CTRL4_BDU | LIS331_CTRL4_BLE,
+                                 range_bits | (config->block_data_update ? LIS331_CTRL4_BDU : 0));
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    lis331_wait_for_settling(config->odr);
+    return ESP_OK;
+}
+
 esp_err_t lis331_create(i2c_master_bus_handle_t bus, uint8_t device_address,
                         const lis331_config_t *config, lis331_handle_t *out_handle)
 {
@@ -368,45 +510,90 @@ esp_err_t lis331_create(i2c_master_bus_handle_t bus, uint8_t device_address,
         .device_address = device_address,
         .scl_speed_hz = config->i2c_clock_hz,
     };
-    ret = i2c_master_bus_add_device(bus, &device_config, &handle->i2c_dev);
+    i2c_master_dev_handle_t i2c_dev;
+    ret = i2c_master_bus_add_device(bus, &device_config, &i2c_dev);
     if (ret != ESP_OK) {
         free(handle);
         return ret;
     }
+    handle->dev = i2c_dev;
+    handle->ops = &lis331_native_ops;
 
-    uint8_t who_am_i;
-    ret = lis331_get_device_id(handle, &who_am_i);
-    if (ret != ESP_OK) {
-        goto fail;
-    }
-    if (who_am_i != LIS331_WHO_AM_I_VALUE) {
-        ESP_LOGE(TAG, "unexpected WHO_AM_I: expected 0x%02X, got 0x%02X",
-                 LIS331_WHO_AM_I_VALUE, who_am_i);
-        ret = ESP_ERR_INVALID_RESPONSE;
-        goto fail;
-    }
-
-    ret = lis331_write_reg(handle, LIS331_REG_CTRL1, odr_bits | LIS331_CTRL1_AXES);
-    if (ret != ESP_OK) {
-        goto fail;
-    }
-    /* Keep output parsing deterministic: BLE=0 maps L then H at ascending addresses. */
-    ret = lis331_update_reg_bits(handle, LIS331_REG_CTRL4,
-                                 LIS331_CTRL4_FS_MASK | LIS331_CTRL4_BDU | LIS331_CTRL4_BLE,
-                                 range_bits | (config->block_data_update ? LIS331_CTRL4_BDU : 0));
+    ret = lis331_init_device(handle, config, odr_bits, range_bits);
     if (ret != ESP_OK) {
         goto fail;
     }
 
-    lis331_wait_for_settling(config->odr);
     *out_handle = handle;
     return ESP_OK;
 
 fail:
-    i2c_master_bus_rm_device(handle->i2c_dev);
+    lis331_native_delete(&handle->dev);
     free(handle);
     return ret;
 }
+
+#ifdef CONFIG_LIS331_USE_I2C_BUS
+esp_err_t lis331_create_i2c_bus(i2c_bus_handle_t bus, uint8_t device_address,
+                                const lis331_config_t *config,
+                                lis331_handle_t *out_handle)
+{
+    if (bus == NULL || out_handle == NULL || device_address > 0x7F) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_handle = NULL;
+
+    lis331_config_t default_config = {
+        .odr = LIS331_ODR_NORMAL_50_HZ,
+        .range = LIS331_RANGE_2G,
+        .block_data_update = true,
+        .i2c_clock_hz = 100000,
+    };
+    if (config == NULL) {
+        config = &default_config;
+    }
+
+    if (config->i2c_clock_hz == 0 || config->i2c_clock_hz > 400000) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t odr_bits;
+    uint8_t range_bits;
+    esp_err_t ret = lis331_odr_to_ctrl1(config->odr, &odr_bits);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = lis331_range_to_ctrl4(config->range, &range_bits);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    lis331_handle_t handle = calloc(1, sizeof(*handle));
+    if (handle == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    handle->dev = i2c_bus_device_create(bus, device_address, config->i2c_clock_hz);
+    if (handle->dev == NULL) {
+        free(handle);
+        return ESP_FAIL;
+    }
+    handle->ops = &lis331_i2c_bus_ops;
+
+    ret = lis331_init_device(handle, config, odr_bits, range_bits);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    *out_handle = handle;
+    return ESP_OK;
+
+fail:
+    lis331_i2c_bus_delete(&handle->dev);
+    free(handle);
+    return ret;
+}
+#endif /* CONFIG_LIS331_USE_I2C_BUS */
 
 esp_err_t lis331_delete(lis331_handle_t *handle)
 {
@@ -414,7 +601,7 @@ esp_err_t lis331_delete(lis331_handle_t *handle)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret = i2c_master_bus_rm_device((*handle)->i2c_dev);
+    esp_err_t ret = (*handle)->ops->delete(&(*handle)->dev);
     if (ret != ESP_OK) {
         return ret;
     }

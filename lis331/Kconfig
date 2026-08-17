@@ -1,0 +1,11 @@
+menu "LIS331DLH driver"
+
+    config LIS331_USE_I2C_BUS
+        bool "Enable the ESP-IoT-Solution i2c_bus transport backend"
+        default n
+        help
+            Compiles lis331_create_i2c_bus() so the driver can be attached to
+            an ESP-IoT-Solution i2c_bus handle. The native ESP-IDF I2C master
+            backend (lis331_create()) is always available. Requires the i2c_bus
+            component in the build.
+endmenu
