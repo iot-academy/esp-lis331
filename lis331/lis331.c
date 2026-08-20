@@ -27,6 +27,8 @@
 #define LIS331_REG_WHO_AM_I  0x0F
 /** @brief CTRL_REG1: PM[2:0], DR[2:0], ZEN, YEN, XEN. */
 #define LIS331_REG_CTRL1     0x20
+/** @brief CTRL_REG2: BOOT, FDS, HPen2/HPen1, HPM[1:0], HPCF[1:0]. */
+#define LIS331_REG_CTRL2     0x21
 /** @brief CTRL_REG4: BDU, BLE, FS[1:0]. */
 #define LIS331_REG_CTRL4     0x23
 /** @brief STATUS_REG: ZYXDA, ZYXOR and per-axis data/overrun flags. */
@@ -38,6 +40,9 @@
 #define LIS331_CTRL1_PM_DR_MASK  0xF8
 /** @brief CTRL_REG1 axes-enable bits: ZEN | YEN | XEN (all axes on). */
 #define LIS331_CTRL1_AXES         0x07
+/** @brief CTRL_REG2.BOOT: reboot memory content from internal flash.
+ *         Restores factory trimming values; self-clears when done. */
+#define LIS331_CTRL2_BOOT         0x80
 /** @brief CTRL_REG4.BDU: block data update. */
 #define LIS331_CTRL4_BDU          0x80
 /** @brief CTRL_REG4.BLE: big/little endian; kept 0 (little endian). */
@@ -449,6 +454,30 @@ static esp_err_t lis331_init_device(lis331_handle_t handle,
         ESP_LOGE(TAG, "unexpected WHO_AM_I: expected 0x%02X, got 0x%02X",
                  LIS331_WHO_AM_I_VALUE, who_am_i);
         return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* Restore factory trimming values from the internal flash. The BOOT bit is
+     * set once and cleared by the device when the copy completes; poll until it
+     * self-clears (LIS331DLH datasheet, CTRL_REG2 description). This makes the
+     * initialization deterministic regardless of the previous power state. */
+    ret = lis331_write_reg(handle, LIS331_REG_CTRL2, LIS331_CTRL2_BOOT);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    uint8_t ctrl2 = LIS331_CTRL2_BOOT;
+    for (uint32_t attempt = 0; attempt < 10; attempt++) {
+        ret = lis331_read_reg(handle, LIS331_REG_CTRL2, &ctrl2);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        if ((ctrl2 & LIS331_CTRL2_BOOT) == 0) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (ctrl2 & LIS331_CTRL2_BOOT) {
+        ESP_LOGE(TAG, "BOOT did not self-clear within the timeout");
+        return ESP_ERR_TIMEOUT;
     }
 
     ret = lis331_write_reg(handle, LIS331_REG_CTRL1, odr_bits | LIS331_CTRL1_AXES);
