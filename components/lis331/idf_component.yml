@@ -11,6 +11,7 @@ issues: https://github.com/iot-academy/esp-lis331/issues
 license: MIT
 repository: https://github.com/iot-academy/esp-lis331
 url: https://github.com/iot-academy/esp-lis331
+registry_url: https://components.espressif.com/components/nestorit/lis331
 tags:
   - lis331
   - lis331dlh
