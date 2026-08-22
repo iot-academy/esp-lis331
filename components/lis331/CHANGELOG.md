@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.2 — 2026-08-22
+
+- Declare all ESP-IDF targets (esp32, esp32c2, esp32c3, esp32c5, esp32c61,
+  esp32c6, esp32h2, esp32p4, esp32s2, esp32s3).
+- Add SPDX-License-Identifier and copyright notice to source files.
+
 ## 0.0.1 — 2026-08-22
 
 Initial release.
