@@ -8,5 +8,16 @@ dependencies:
       - if: "$CONFIG{LIS331_USE_I2C_BUS} == True"
 description: Native ESP-IDF I2C driver for the LIS331DLH accelerometer
 issues: https://github.com/iot-academy/esp-lis331/issues
+license: MIT
+repository: https://github.com/iot-academy/esp-lis331
 url: https://github.com/iot-academy/esp-lis331
+tags:
+  - lis331
+  - lis331dlh
+  - accelerometer
+  - i2c
+  - stmicroelectronics
+  - mems
+targets:
+  - esp32
 version: 0.0.1
