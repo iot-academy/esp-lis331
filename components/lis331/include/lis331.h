@@ -33,6 +33,9 @@
  * @author Eugene A. Kanashev
  * @date 2026
  *
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Eugene A. Kanashev
+ *
  * @defgroup lis331 LIS331DLH accelerometer driver
  * @{
  */

@@ -10,6 +10,9 @@
  *   - ESP-IoT-Solution `i2c_bus` wrapper (enabled by CONFIG_LIS331_USE_I2C_BUS).
  *
  * @ingroup lis331
+ *
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Eugene A. Kanashev
  */
 
 #include <stdlib.h>
