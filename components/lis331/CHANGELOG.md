@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0 — 2026-08-22
+
+Stable release.
+
+- Component is fully standalone: drop the `cmake_utilities` dependency and
+  the `cu_pkg_define_version()` macro (generated `LIS331_VER_*` macros were
+  unused). `cmake_utilities` is still pulled transitively by
+  `espressif/i2c_bus` when enabled.
+- Pin the optional `espressif/i2c_bus` dependency to `^1.0.0` instead of `*`.
+- Declare all ESP-IDF targets.
+- Add SPDX-License-Identifier and copyright notice to source files.
+- Remove Arduino-related phrasing from documentation.
+
 ## 0.0.2 — 2026-08-22
 
 - Declare all ESP-IDF targets (esp32, esp32c2, esp32c3, esp32c5, esp32c61,
