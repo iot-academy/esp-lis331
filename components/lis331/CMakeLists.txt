@@ -12,6 +12,3 @@ idf_component_register(SRCS "lis331.c"
 if(CONFIG_LIS331_USE_I2C_BUS)
     idf_component_optional_requires(PUBLIC espressif__i2c_bus)
 endif()
-
-include(package_manager)
-cu_pkg_define_version(${CMAKE_CURRENT_LIST_DIR})

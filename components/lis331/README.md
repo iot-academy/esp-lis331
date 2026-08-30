@@ -1,8 +1,7 @@
 # LIS331DLH — ESP-IDF Driver Component
 
 ESP-IDF component driver for the STMicroelectronics LIS331DLH three-axis MEMS
-accelerometer. Uses the new I2C master API (`driver/i2c_master.h`). No Arduino
-dependencies.
+accelerometer. Uses the new I2C master API (`driver/i2c_master.h`).
 
 All register semantics follow the official LIS331DLH datasheet.
 

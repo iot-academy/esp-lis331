@@ -2,7 +2,7 @@
 
 Production-oriented I2C driver for the STMicroelectronics LIS331DLH three-axis
 accelerometer, written for ESP-IDF 5.x/6.x using the new I2C master API
-(`driver/i2c_master.h`). No Arduino dependencies.
+(`driver/i2c_master.h`).
 
 All register semantics follow the LIS331DLH datasheet. No functionality from
 similar ST sensors (LIS3DH, LIS331HH, ...) is assumed.
