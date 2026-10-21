@@ -104,7 +104,6 @@ exporting an ESP-IDF environment:
 
 ## Dependencies
 
-- `espressif/cmake_utilities` (always);
 - `espressif/i2c_bus` (conditional on `CONFIG_LIS331_USE_I2C_BUS`, pulled
   from the component registry when enabled).
 

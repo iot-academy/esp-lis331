@@ -48,7 +48,6 @@ ESP_ERROR_CHECK(lis331_read_acceleration(sensor, &a));
 ## Dependencies
 
 - `idf` >= 5.3.0
-- `espressif/cmake_utilities` 0.*
 - `espressif/i2c_bus` (conditional, see above)
 
 ## License
